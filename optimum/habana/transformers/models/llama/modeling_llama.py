@@ -891,7 +891,7 @@ class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
         super(LlamaDecoderLayer, self).__init__()
         self.hidden_size = config.hidden_size
 
-        if layer_idx % 1 == 0:
+        if layer_idx % 64 == 0:
             attn_cls = GaudiLlamaAttention
         else:
             #print("Use NoopLlamaAttention")
