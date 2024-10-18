@@ -864,13 +864,39 @@ class TPGaudiLlamaAttention(GaudiLlamaAttention, TPModule):
         hidden_states = reduce_from_tensor_model_parallel_region(hidden_states)
         return hidden_states, attn_weights, present_key_value
 
+class NoopLlamaAttention(GaudiLlamaAttention):
+    def pre_attn_forward(self, **kwargs):
+
+        #print(">>>>>>>>>>>>>>>>>NoopLlamaAttention fwd")
+        past_key_value = kwargs.get("past_key_value", None)
+        hidden_states = kwargs.get("hidden_states", None)
+        if past_key_value is None:
+            key_states = self.k_proj(hidden_states)
+            past_key = torch.zeros(
+                key_states.shape, dtype=self.get_k_proj_weight_dtype(), device=key_states.device
+            )
+            past_value = torch.zeros(
+                key_states.shape, dtype=self.get_k_proj_weight_dtype(), device=key_states.device
+            )
+            # Return list instead of tuple
+            past_key_value = [past_key, past_value]
+        return kwargs.get("hidden_states", None), None, past_key_value
+    
+    def forward(self, **kwargs):
+        hidden_states = kwargs.get("hidden_states", None)
+        return hidden_states
 
 class GaudiLlamaDecoderLayer(LlamaDecoderLayer):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super(LlamaDecoderLayer, self).__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = GaudiLlamaAttention(config=config, layer_idx=layer_idx)
+        if layer_idx % 1 == 0:
+            attn_cls = GaudiLlamaAttention
+        else:
+            #print("Use NoopLlamaAttention")
+            attn_cls = NoopLlamaAttention
+        self.self_attn = attn_cls(config=config, layer_idx=layer_idx)
 
         self.mlp = GaudiLlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)

@@ -17,6 +17,7 @@
 import copy
 import inspect
 import math
+import time
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -67,6 +68,7 @@ from ..integrations.deepspeed import unwrap_deepspeed_model
 from .candidate_generator import GaudiAssistedCandidateGenerator
 from .configuration_utils import GaudiGenerationConfig
 
+import habana_frameworks.torch as htorch
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -2361,6 +2363,8 @@ class GaudiGenerationMixin(GenerationMixin):
         model_kwargs["pad_done"] = False
         model_kwargs["mqa_model"] = False
         model_kwargs["lazy_mode"] = lazy_mode
+        first = True
+        self.fwd_time = {}
         while self._has_unfinished_sequences(
             this_peer_finished, synced_gpus, device=input_ids.device, cur_len=cur_len, max_length=max_length
         ):
@@ -2384,11 +2388,20 @@ class GaudiGenerationMixin(GenerationMixin):
             hpu_graphs_kwargs = self._get_hpu_graphs_kwargs(model_kwargs)
 
             # forward pass to get next token
+            start = time.perf_counter()
             outputs = self(
                 **model_inputs,
                 return_dict=True,
                 **hpu_graphs_kwargs,
             )
+            htorch.hpu.synchronize()
+            elapsed_time = time.perf_counter() - start
+            if first:
+                first = False
+            else:
+                if batch_size not in self.fwd_time:
+                    self.fwd_time[batch_size] = []
+                self.fwd_time[batch_size].append(elapsed_time)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
@@ -2570,6 +2583,12 @@ class GaudiGenerationMixin(GenerationMixin):
                     if idx > idx_bs:
                         input_ids[i][idx] = pad_token_id
                 idx_bs = generation_config.max_length
+
+        try:
+            next_token_statistic = [f"model fwd: bs == {bs}, avg_time is {sum(v)/len(v) * 1000} msecs, counts is {len(v)}\n" for bs, v in self.fwd_time.items()]  # noqa: E501
+        except:
+            next_token_statistic = []
+        print(next_token_statistic)
 
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
